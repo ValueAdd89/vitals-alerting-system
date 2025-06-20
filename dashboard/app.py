@@ -27,9 +27,18 @@ VITAL_RANGES = {
 # --- Data Loading (Cached) ---
 @st.cache_data
 def load_patient_data():
+    # Define the relative path to the data directory
+    # If your data is in a 'data' folder at the root of your project
+    # and app.py is in 'dashboard', then the path from app.py to data is '../data/'
+    data_dir = Path(__file__).parent.parent / "data"
+
+    metadata_path = data_dir / "sample_patient_metadata.csv"
+    vitals_path = data_dir / "archived_vitals_20250620_212622.csv"
+
     try:
-        df_metadata = pd.read_csv("sample_patient_metadata.csv")
-        df_vitals = pd.read_csv("archived_vitals_20250620_212622.csv")
+        # Use the constructed paths
+        df_metadata = pd.read_csv(metadata_path)
+        df_vitals = pd.read_csv(vitals_path)
 
         # --- Data Cleaning and Merging ---
         # Convert timestamps to datetime
@@ -50,7 +59,7 @@ def load_patient_data():
         return df_merged, df_metadata
 
     except FileNotFoundError:
-        st.error("Error: Data CSV files not found. Please ensure 'sample_patient_metadata.csv' and 'archived_vitals_20250620_212622.csv' are in the same directory.")
+        st.error(f"Error: Data CSV files not found at expected path: {metadata_path} or {vitals_path}. Please ensure your data files are correctly placed.")
         st.stop()
     except Exception as e:
         st.error(f"An error occurred during data loading or preprocessing: {e}")
