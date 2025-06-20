@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
 import numpy as np
+import io # Needed for debugging output buffer, will remove later
 
 # --- Configuration ---
 st.set_page_config(
@@ -36,29 +37,20 @@ def load_patient_data():
         df_metadata = pd.read_csv(metadata_path)
         df_vitals = pd.read_csv(vitals_path)
 
-        # --- DEBUGGING LINES START HERE ---
-        st.write("--- Debugging df_metadata ---")
-        st.write("df_metadata head:", df_metadata.head())
-        st.write("df_metadata columns:", df_metadata.columns.tolist())
-        st.write("df_metadata info:")
-        buffer = io.StringIO()
-        df_metadata.info(buf=buffer)
-        st.text(buffer.getvalue())
-        st.write("--- Debugging df_metadata End ---")
-        # --- DEBUGGING LINES END HERE ---
-
-        # Convert timestamps to datetime
-        df_vitals['timestamp'] = pd.to_datetime(df_vitals['timestamp'])
-        
-        # Check if 'admission_date' exists before trying to convert
-        if 'admission_date' in df_metadata.columns:
-            df_metadata['admission_date'] = pd.to_datetime(df_metadata['admission_date'])
+        # --- FIX: Rename user_id to patient_id in metadata for merging ---
+        if 'user_id' in df_metadata.columns:
+            df_metadata = df_metadata.rename(columns={'user_id': 'patient_id'})
         else:
-            st.error("Error: 'admission_date' column not found in sample_patient_metadata.csv. Please check the file content.")
-            return pd.DataFrame(), pd.DataFrame() # Return empty DataFrames to prevent further errors
+            st.error("Error: 'user_id' column not found in sample_patient_metadata.csv. Cannot merge without a common ID.")
+            return pd.DataFrame(), pd.DataFrame() # Return empty DataFrames
 
-        if 'discharge_date' in df_metadata.columns:
-            df_metadata['discharge_date'] = pd.to_datetime(df_metadata['discharge_date'])
+        # --- FIX: Remove 'admission_date'/'discharge_date' processing as they are not present ---
+        # df_metadata['admission_date'] = pd.to_datetime(df_metadata['admission_date']) # Removed
+        # if 'discharge_date' in df_metadata.columns: # Removed
+        #     df_metadata['discharge_date'] = pd.to_datetime(df_metadata['discharge_date']) # Removed
+
+        # Convert vitals timestamp
+        df_vitals['timestamp'] = pd.to_datetime(df_vitals['timestamp'])
 
         # Merge dataframes
         df_merged = pd.merge(df_vitals, df_metadata, on='patient_id', how='left')
@@ -66,8 +58,11 @@ def load_patient_data():
         # Basic data quality checks/fill missing values (example)
         for col in ['heart_rate', 'blood_pressure_systolic', 'blood_pressure_diastolic',
                     'temperature', 'oxygen_saturation', 'respiration_rate', 'glucose_level']:
-            df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce')
-            df_merged = df_merged.dropna(subset=[col])
+            if col in df_merged.columns: # Ensure column exists before processing
+                df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce') # Coerce non-numeric to NaN
+                df_merged = df_merged.dropna(subset=[col]) # Drop rows where vitals are NaN
+            else:
+                st.warning(f"Vital sign column '{col}' not found in vital signs data. Some dashboard elements may be incomplete.")
 
         return df_merged, df_metadata
 
@@ -75,11 +70,10 @@ def load_patient_data():
         st.error(f"Error: Data CSV files not found at expected path: {metadata_path} or {vitals_path}. Please ensure your data files are correctly placed.")
         st.stop()
     except Exception as e:
-        st.error(f"An error occurred during data loading or preprocessing: {e}. This might indicate a problem with column names or data types AFTER file loading. Check the debugging info above for clues.")
+        st.error(f"An error occurred during data loading or preprocessing: {e}. Please check your CSV file contents and column names.")
         st.stop()
 
-# It is important to import io for the debugging info function
-import io
+# --- Load Data ---
 df_all_data, df_patient_metadata = load_patient_data()
 
 if df_all_data.empty:
@@ -94,28 +88,45 @@ all_patient_ids = ['All'] + sorted(df_all_data['patient_id'].unique().tolist())
 selected_patient_id = st.sidebar.selectbox("Select Patient ID", all_patient_ids)
 
 # Date Range Filter
-min_date = df_all_data['timestamp'].min().date()
-max_date = df_all_data['timestamp'].max().date()
+# Ensure min/max date are valid before using them
+if not df_all_data['timestamp'].empty:
+    min_date_val = df_all_data['timestamp'].min().date()
+    max_date_val = df_all_data['timestamp'].max().date()
+else: # Fallback for empty data if it somehow reaches here
+    min_date_val = pd.to_datetime('2023-01-01').date()
+    max_date_val = pd.to_datetime('2023-01-01').date()
 
 date_range = st.sidebar.date_input(
     "Select Date Range",
-    value=(min_date, max_date),
-    min_value=min_date,
-    max_value=max_date
+    value=(min_date_val, max_date_val),
+    min_value=min_date_val,
+    max_value=max_date_val
 )
 
-start_date = pd.to_datetime(date_range[0])
-end_date = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1) # Include the end day fully
+# Ensure date_range has two elements before unpacking
+if len(date_range) == 2:
+    start_date = pd.to_datetime(date_range[0])
+    end_date = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1) # Include the end day fully
+else: # Handle case where only one date is selected (e.g., initial state)
+    start_date = pd.to_datetime(min_date_val)
+    end_date = pd.to_datetime(max_date_val) + pd.Timedelta(days=1)
+
 
 # Demographic Filters
 all_genders = ['All'] + sorted(df_patient_metadata['gender'].unique().tolist())
 selected_gender = st.sidebar.selectbox("Filter by Gender", all_genders)
 
-all_diagnoses = ['All'] + sorted(df_patient_metadata['diagnosis'].unique().tolist())
-selected_diagnosis = st.sidebar.selectbox("Filter by Diagnosis", all_diagnoses)
+# --- FIX: Changed Diagnosis to Condition ---
+if 'condition' in df_patient_metadata.columns:
+    all_conditions = ['All'] + sorted(df_patient_metadata['condition'].unique().tolist())
+    selected_condition = st.sidebar.selectbox("Filter by Condition", all_conditions)
+else:
+    selected_condition = 'All'
+    st.sidebar.info("Condition column not found in metadata for filtering.")
 
-all_doctors = ['All'] + sorted(df_patient_metadata['doctor_assigned'].unique().tolist())
-selected_doctor = st.sidebar.selectbox("Filter by Doctor", all_doctors)
+# --- FIX: Removed Doctor filter as 'doctor_assigned' is not present ---
+# all_doctors = ['All'] + sorted(df_patient_metadata['doctor_assigned'].unique().tolist()) # Removed
+# selected_doctor = st.sidebar.selectbox("Filter by Doctor", all_doctors) # Removed
 
 
 # --- Apply Filters ---
@@ -132,11 +143,12 @@ df_filtered_data = df_filtered_data[
 if selected_gender != 'All':
     df_filtered_data = df_filtered_data[df_filtered_data['gender'] == selected_gender]
 
-if selected_diagnosis != 'All':
-    df_filtered_data = df_filtered_data[df_filtered_data['diagnosis'] == selected_diagnosis]
+if selected_condition != 'All': # --- FIX: Apply Condition filter ---
+    df_filtered_data = df_filtered_data[df_filtered_data['condition'] == selected_condition]
 
-if selected_doctor != 'All':
-    df_filtered_data = df_filtered_data[df_filtered_data['doctor_assigned'] == selected_doctor]
+# --- FIX: Removed Doctor filter application ---
+# if selected_doctor != 'All':
+#     df_filtered_data = df_filtered_data[df_filtered_data['doctor_assigned'] == selected_doctor]
 
 
 # --- Check if data exists after filtering ---
@@ -161,16 +173,18 @@ with tabs[0]:
 
     total_patients_filtered = df_filtered_data['patient_id'].nunique()
     total_readings = len(df_filtered_data)
-    avg_hr = df_filtered_data['heart_rate'].mean()
-    avg_temp = df_filtered_data['temperature'].mean()
-    avg_o2 = df_filtered_data['oxygen_saturation'].mean()
+    
+    # Ensure vital sign columns exist before calculating mean
+    avg_hr = df_filtered_data['heart_rate'].mean() if 'heart_rate' in df_filtered_data.columns else np.nan
+    avg_temp = df_filtered_data['temperature'].mean() if 'temperature' in df_filtered_data.columns else np.nan
+    avg_o2 = df_filtered_data['oxygen_saturation'].mean() if 'oxygen_saturation' in df_filtered_data.columns else np.nan
 
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Total Patients (Filtered)", total_patients_filtered)
     col2.metric("Total Vital Readings", total_readings)
-    col3.metric("Avg Heart Rate", f"{avg_hr:.1f} bpm")
-    col4.metric("Avg Temperature", f"{avg_temp:.1f} °F")
-    col5.metric("Avg O2 Saturation", f"{avg_o2:.1f} %")
+    col3.metric("Avg Heart Rate", f"{avg_hr:.1f} bpm" if not np.isnan(avg_hr) else "N/A")
+    col4.metric("Avg Temperature", f"{avg_temp:.1f} °F" if not np.isnan(avg_temp) else "N/A")
+    col5.metric("Avg O2 Saturation", f"{avg_o2:.1f} %" if not np.isnan(avg_o2) else "N/A")
 
     st.markdown("---")
     st.subheader("Patient Demographics (Filtered Population)")
@@ -178,34 +192,46 @@ with tabs[0]:
     col_demog1, col_demog2 = st.columns(2)
 
     with col_demog1:
-        # Diagnosis Distribution
-        diagnosis_counts = df_filtered_data['diagnosis'].value_counts().reset_index()
-        diagnosis_counts.columns = ['Diagnosis', 'Count']
-        fig_diagnosis = px.pie(
-            diagnosis_counts,
-            values='Count',
-            names='Diagnosis',
-            title='Diagnosis Distribution',
-            hole=0.3
-        )
-        st.plotly_chart(fig_diagnosis, use_container_width=True)
+        # Condition Distribution (formerly Diagnosis)
+        if 'condition' in df_filtered_data.columns and not df_filtered_data['condition'].empty:
+            condition_counts = df_filtered_data['condition'].value_counts().reset_index()
+            condition_counts.columns = ['Condition', 'Count']
+            fig_condition = px.pie(
+                condition_counts,
+                values='Count',
+                names='Condition',
+                title='Condition Distribution',
+                hole=0.3
+            )
+            st.plotly_chart(fig_condition, use_container_width=True)
+        else:
+            st.info("No condition data available for distribution.")
+
 
     with col_demog2:
-        # Age Distribution (using age groups if available, or just histogram)
-        fig_age = px.histogram(
-            df_filtered_data,
-            x='age',
-            nbins=10,
-            title='Age Distribution',
-            labels={'age': 'Age (Years)', 'count': 'Number of Patients'}
-        )
-        st.plotly_chart(fig_age, use_container_width=True)
+        # Age Distribution
+        if 'age' in df_filtered_data.columns and not df_filtered_data['age'].empty:
+            fig_age = px.histogram(
+                df_filtered_data,
+                x='age',
+                nbins=10,
+                title='Age Distribution',
+                labels={'age': 'Age (Years)', 'count': 'Number of Patients'}
+            )
+            st.plotly_chart(fig_age, use_container_width=True)
+        else:
+            st.info("No age data available for distribution.")
     
     st.markdown("---")
     st.subheader("Patient Metadata Details (Filtered Population)")
     # Show metadata for unique patients in filtered data
-    unique_patients_metadata = df_filtered_data[['patient_id', 'gender', 'age', 'diagnosis', 'doctor_assigned', 'room_number', 'admission_date']].drop_duplicates().set_index('patient_id')
-    st.dataframe(unique_patients_metadata)
+    # --- FIX: Display only available columns ---
+    display_cols = [col for col in ['patient_id', 'gender', 'age', 'condition'] if col in df_filtered_data.columns]
+    if display_cols:
+        unique_patients_metadata = df_filtered_data[display_cols].drop_duplicates().set_index('patient_id')
+        st.dataframe(unique_patients_metadata)
+    else:
+        st.info("No relevant metadata columns available for display.")
 
 
 # --- TAB 2: Vitals Trends ---
@@ -215,53 +241,48 @@ with tabs[1]:
     if selected_patient_id == 'All':
         st.warning("Please select a specific patient from the sidebar to view individual vital sign trends.")
     else:
-        st.info(f"Showing vital signs for Patient ID: {selected_patient_id} from {date_range[0]} to {date_range[1]}.")
+        st.info(f"Showing vital signs for Patient ID: {selected_patient_id} from {date_range[0].strftime('%Y-%m-%d')} to {date_range[1].strftime('%Y-%m-%d')}.")
         patient_data = df_filtered_data[df_filtered_data['patient_id'] == selected_patient_id].sort_values('timestamp')
 
         if patient_data.empty:
             st.warning("No vital sign readings for this patient within the selected date range and filters.")
         else:
-            # Heart Rate
-            fig_hr = px.line(patient_data, x='timestamp', y='heart_rate', title='Heart Rate Trend')
-            if 'heart_rate' in VITAL_RANGES:
-                fig_hr.add_hrect(y0=VITAL_RANGES['heart_rate']['min'], y1=VITAL_RANGES['heart_rate']['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Range", annotation_position="top left")
-            st.plotly_chart(fig_hr, use_container_width=True)
+            # Common function to plot vital trends
+            def plot_vital_trend(data, vital_col, title, unit):
+                if vital_col in data.columns:
+                    fig = px.line(data, x='timestamp', y=vital_col, title=title)
+                    if vital_col in VITAL_RANGES:
+                        fig.add_hrect(y0=VITAL_RANGES[vital_col]['min'], y1=VITAL_RANGES[vital_col]['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Range", annotation_position="top left")
+                    fig.update_layout(yaxis_title=f"{vital_col.replace('_', ' ').title()} ({unit})")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info(f"'{title}' data not available for plotting.")
 
-            # Blood Pressure
-            fig_bp = go.Figure()
-            fig_bp.add_trace(go.Scatter(x=patient_data['timestamp'], y=patient_data['blood_pressure_systolic'], mode='lines+markers', name='Systolic'))
-            fig_bp.add_trace(go.Scatter(x=patient_data['timestamp'], y=patient_data['blood_pressure_diastolic'], mode='lines+markers', name='Diastolic'))
-            fig_bp.update_layout(title='Blood Pressure Trend', yaxis_title='BP (mmHg)')
-            if 'blood_pressure_systolic' in VITAL_RANGES:
-                fig_bp.add_hrect(y0=VITAL_RANGES['blood_pressure_systolic']['min'], y1=VITAL_RANGES['blood_pressure_systolic']['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Systolic", annotation_position="top left")
-            if 'blood_pressure_diastolic' in VITAL_RANGES:
-                fig_bp.add_hrect(y0=VITAL_RANGES['blood_pressure_diastolic']['min'], y1=VITAL_RANGES['blood_pressure_diastolic']['max'], line_width=0, fillcolor="blue", opacity=0.1, annotation_text="Normal Diastolic", annotation_position="top right")
-            st.plotly_chart(fig_bp, use_container_width=True)
+            plot_vital_trend(patient_data, 'heart_rate', 'Heart Rate Trend', VITAL_RANGES['heart_rate']['unit'])
             
-            # Temperature
-            fig_temp = px.line(patient_data, x='timestamp', y='temperature', title='Temperature Trend')
-            if 'temperature' in VITAL_RANGES:
-                fig_temp.add_hrect(y0=VITAL_RANGES['temperature']['min'], y1=VITAL_RANGES['temperature']['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Range", annotation_position="top left")
-            st.plotly_chart(fig_temp, use_container_width=True)
+            # Blood Pressure
+            if 'blood_pressure_systolic' in patient_data.columns and 'blood_pressure_diastolic' in patient_data.columns:
+                fig_bp = go.Figure()
+                fig_bp.add_trace(go.Scatter(x=patient_data['timestamp'], y=patient_data['blood_pressure_systolic'], mode='lines+markers', name='Systolic'))
+                fig_bp.add_trace(go.Scatter(x=patient_data['timestamp'], y=patient_data['blood_pressure_diastolic'], mode='lines+markers', name='Diastolic'))
+                fig_bp.update_layout(title='Blood Pressure Trend', yaxis_title='BP (mmHg)')
+                if 'blood_pressure_systolic' in VITAL_RANGES:
+                    fig_bp.add_hrect(y0=VITAL_RANGES['blood_pressure_systolic']['min'], y1=VITAL_RANGES['blood_pressure_systolic']['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Systolic", annotation_position="top left")
+                if 'blood_pressure_diastolic' in VITAL_RANGES:
+                    fig_bp.add_hrect(y0=VITAL_RANGES['blood_pressure_diastolic']['min'], y1=VITAL_RANGES['blood_pressure_diastolic']['max'], line_width=0, fillcolor="blue", opacity=0.1, annotation_text="Normal Diastolic", annotation_position="top right")
+                st.plotly_chart(fig_bp, use_container_width=True)
+            else:
+                st.info("Blood Pressure data (systolic/diastolic) not available for plotting.")
+            
+            plot_vital_trend(patient_data, 'temperature', 'Temperature Trend', VITAL_RANGES['temperature']['unit'])
 
-            # Oxygen Saturation & Respiration Rate (combined for space)
             col_vitals_extra1, col_vitals_extra2 = st.columns(2)
             with col_vitals_extra1:
-                fig_o2 = px.line(patient_data, x='timestamp', y='oxygen_saturation', title='Oxygen Saturation Trend')
-                if 'oxygen_saturation' in VITAL_RANGES:
-                    fig_o2.add_hrect(y0=VITAL_RANGES['oxygen_saturation']['min'], y1=VITAL_RANGES['oxygen_saturation']['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Range", annotation_position="top left")
-                st.plotly_chart(fig_o2, use_container_width=True)
+                plot_vital_trend(patient_data, 'oxygen_saturation', 'Oxygen Saturation Trend', VITAL_RANGES['oxygen_saturation']['unit'])
             with col_vitals_extra2:
-                fig_resp = px.line(patient_data, x='timestamp', y='respiration_rate', title='Respiration Rate Trend')
-                if 'respiration_rate' in VITAL_RANGES:
-                    fig_resp.add_hrect(y0=VITAL_RANGES['respiration_rate']['min'], y1=VITAL_RANGES['respiration_rate']['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Range", annotation_position="top left")
-                st.plotly_chart(fig_resp, use_container_width=True)
+                plot_vital_trend(patient_data, 'respiration_rate', 'Respiration Rate Trend', VITAL_RANGES['respiration_rate']['unit'])
 
-            # Glucose Level
-            fig_glucose = px.line(patient_data, x='timestamp', y='glucose_level', title='Glucose Level Trend')
-            if 'glucose_level' in VITAL_RANGES:
-                fig_glucose.add_hrect(y0=VITAL_RANGES['glucose_level']['min'], y1=VITAL_RANGES['glucose_level']['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Range", annotation_position="top left")
-            st.plotly_chart(fig_glucose, use_container_width=True)
+            plot_vital_trend(patient_data, 'glucose_level', 'Glucose Level Trend', VITAL_RANGES['glucose_level']['unit'])
 
 
 # --- TAB 3: Vitals Distribution ---
@@ -273,8 +294,7 @@ with tabs[2]:
         'temperature', 'oxygen_saturation', 'respiration_rate', 'glucose_level'
     ]
     
-    # Ensure only available vital signs are in the list
-    available_vitals = [col for col in vital_signs_cols if col in df_filtered_data.columns]
+    available_vitals = [col for col in vital_signs_cols if col in df_filtered_data.columns and not df_filtered_data[col].empty]
 
     if not available_vitals:
         st.warning("No vital sign columns found in the filtered data to display distribution.")
@@ -313,9 +333,12 @@ with tabs[3]:
     else:
         anomalies_found = []
         for vital, ranges in VITAL_RANGES.items():
-            if vital in df_filtered_data.columns:
-                out_of_range_low = df_filtered_data[df_filtered_data[vital] < ranges['min']]
-                out_of_range_high = df_filtered_data[df_filtered_data[vital] > ranges['max']]
+            if vital in df_filtered_data.columns: # Ensure vital column exists
+                # Filter out NaN values before comparison
+                vital_data_filtered = df_filtered_data[df_filtered_data[vital].notna()]
+                
+                out_of_range_low = vital_data_filtered[vital_data_filtered[vital] < ranges['min']]
+                out_of_range_high = vital_data_filtered[vital_data_filtered[vital] > ranges['max']]
 
                 if not out_of_range_low.empty:
                     for _, row in out_of_range_low.iterrows():
@@ -351,8 +374,12 @@ with tabs[3]:
             if selected_anomaly_vital:
                 vital_col_name = selected_anomaly_vital.replace(' ', '_').lower() # Convert back to column name
                 if vital_col_name in df_filtered_data.columns:
+                    # Filter patient data to only show patients with anomalies for the selected vital
+                    patients_with_anomaly = df_anomalies[df_anomalies['Vital Sign'] == selected_anomaly_vital]['Patient ID'].unique()
+                    data_for_anomaly_trend = df_filtered_data[df_filtered_data['patient_id'].isin(patients_with_anomaly)].sort_values('timestamp')
+                    
                     fig_anomaly_trend = px.line(
-                        df_filtered_data[df_filtered_data['patient_id'].isin(df_anomalies[df_anomalies['Vital Sign'] == selected_anomaly_vital]['Patient ID'])],
+                        data_for_anomaly_trend,
                         x='timestamp',
                         y=vital_col_name,
                         color='patient_id',
@@ -363,6 +390,6 @@ with tabs[3]:
                          fig_anomaly_trend.add_hrect(y0=VITAL_RANGES[vital_col_name]['min'], y1=VITAL_RANGES[vital_col_name]['max'], line_width=0, fillcolor="green", opacity=0.1, annotation_text="Normal Range", annotation_position="top left")
                     st.plotly_chart(fig_anomaly_trend, use_container_width=True)
                 else:
-                    st.info(f"Cannot plot trend for {selected_anomaly_vital} as column is not directly available.")
+                    st.info(f"Cannot plot trend for {selected_anomaly_vital} as column is not directly available in data.")
         else:
             st.success("No vital sign anomalies detected within the selected filters and defined normal ranges.")
