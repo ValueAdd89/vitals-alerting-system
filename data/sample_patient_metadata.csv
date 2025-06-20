@@ -1,4 +1,21 @@
-user_id,age,gender,condition
-user_1,72,F,hypertension
-user_2,60,M,COPD
-user_3,45,F,diabetes
+user_id,gender,age,condition
+P001,Male,45,Hypertension
+P002,Female,32,Diabetes
+P003,Male,67,Heart Disease
+P004,Female,54,Asthma
+P005,Male,41,Hypertension
+P006,Female,29,Diabetes
+P007,Male,58,Heart Disease
+P008,Female,36,Normal
+P009,Male,72,Hypertension
+P010,Female,63,Diabetes
+P011,Male,39,Normal
+P012,Female,48,Asthma
+P013,Male,55,Heart Disease
+P014,Female,44,Hypertension
+P015,Male,31,Normal
+P016,Female,69,Diabetes
+P017,Male,42,Asthma
+P018,Female,37,Normal
+P019,Male,61,Heart Disease
+P020,Female,50,Hypertension
