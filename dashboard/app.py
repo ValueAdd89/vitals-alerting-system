@@ -27,24 +27,37 @@ VITAL_RANGES = {
 # --- Data Loading (Cached) ---
 @st.cache_data
 def load_patient_data():
-    # Define the relative path to the data directory
-    # If your data is in a 'data' folder at the root of your project
-    # and app.py is in 'dashboard', then the path from app.py to data is '../data/'
-    data_dir = Path(__file__).parent.parent / "data"
+    data_dir = Path(__file__).parent.parent / "data" # Assumes data is in project_root/data/
 
     metadata_path = data_dir / "sample_patient_metadata.csv"
     vitals_path = data_dir / "archived_vitals_20250620_212622.csv"
 
     try:
-        # Use the constructed paths
         df_metadata = pd.read_csv(metadata_path)
         df_vitals = pd.read_csv(vitals_path)
 
-        # --- Data Cleaning and Merging ---
+        # --- DEBUGGING LINES START HERE ---
+        st.write("--- Debugging df_metadata ---")
+        st.write("df_metadata head:", df_metadata.head())
+        st.write("df_metadata columns:", df_metadata.columns.tolist())
+        st.write("df_metadata info:")
+        buffer = io.StringIO()
+        df_metadata.info(buf=buffer)
+        st.text(buffer.getvalue())
+        st.write("--- Debugging df_metadata End ---")
+        # --- DEBUGGING LINES END HERE ---
+
         # Convert timestamps to datetime
         df_vitals['timestamp'] = pd.to_datetime(df_vitals['timestamp'])
-        df_metadata['admission_date'] = pd.to_datetime(df_metadata['admission_date'])
-        if 'discharge_date' in df_metadata.columns: # Discharge date might be optional
+        
+        # Check if 'admission_date' exists before trying to convert
+        if 'admission_date' in df_metadata.columns:
+            df_metadata['admission_date'] = pd.to_datetime(df_metadata['admission_date'])
+        else:
+            st.error("Error: 'admission_date' column not found in sample_patient_metadata.csv. Please check the file content.")
+            return pd.DataFrame(), pd.DataFrame() # Return empty DataFrames to prevent further errors
+
+        if 'discharge_date' in df_metadata.columns:
             df_metadata['discharge_date'] = pd.to_datetime(df_metadata['discharge_date'])
 
         # Merge dataframes
@@ -53,8 +66,8 @@ def load_patient_data():
         # Basic data quality checks/fill missing values (example)
         for col in ['heart_rate', 'blood_pressure_systolic', 'blood_pressure_diastolic',
                     'temperature', 'oxygen_saturation', 'respiration_rate', 'glucose_level']:
-            df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce') # Coerce non-numeric to NaN
-            df_merged = df_merged.dropna(subset=[col]) # Drop rows where vitals are NaN
+            df_merged[col] = pd.to_numeric(df_merged[col], errors='coerce')
+            df_merged = df_merged.dropna(subset=[col])
 
         return df_merged, df_metadata
 
@@ -62,9 +75,11 @@ def load_patient_data():
         st.error(f"Error: Data CSV files not found at expected path: {metadata_path} or {vitals_path}. Please ensure your data files are correctly placed.")
         st.stop()
     except Exception as e:
-        st.error(f"An error occurred during data loading or preprocessing: {e}")
+        st.error(f"An error occurred during data loading or preprocessing: {e}. This might indicate a problem with column names or data types AFTER file loading. Check the debugging info above for clues.")
         st.stop()
 
+# It is important to import io for the debugging info function
+import io
 df_all_data, df_patient_metadata = load_patient_data()
 
 if df_all_data.empty:
